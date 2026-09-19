@@ -14,8 +14,10 @@ OUTPUT_NAMES = {
     "SMAP_EF": "SMAP_EF_R",
     "SMAP_FNO": "SMAP_FNO_R",
     "SMAP_LSTM": "SMAP_LSTM_R",
-    "ERA5_Land": "ERA5-Land_R",
-    "NLDAS": "NLDAS_R",
+    "ERA5-Land": "ERA5-Land_R",
+    "NLDAS_NOAH": "NLDAS_NOAH_R",
+    "NLDAS_VIC": "NLDAS_VIC_R",
+    "NLDAS_MOSAIC": "NLDAS_MOSAIC_R",
 }
 
 
@@ -40,7 +42,7 @@ def summarize_fixed_inventory(
     product_specs,
     output_file,
 ):
-    """Average each target across its two matched land-reference triplets."""
+    """Average each target across its four matched land-reference triplets."""
     triplets = tuple(triplets)
     sums = {}
     counts = {}

@@ -120,7 +120,7 @@ def _resample_surface(
     aggregation_method,
     magnification_factor,
 ):
-    """Apply the focused HydroAI resampling behavior needed by SMAP-NN."""
+    """Apply the focused nearest-neighbor resampling needed by SMAP-NN."""
     if (
         target_longitude.shape == source_longitude.shape
         and target_latitude.shape == source_latitude.shape

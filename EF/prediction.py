@@ -1,4 +1,4 @@
-"""Export and evaluate fixed-T EF series embedded in common ISMN point files."""
+"""Calculate, export, and summarize point-scale EF predictions."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import os
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+from .filter import filtered_rzsm
 
 
 SUMMARY_COLUMNS = [
@@ -134,7 +136,7 @@ def fixed_t_station_metrics(observed_rzsm, simulated_rzsm):
     metrics = {"R": np.nan, "RMSE": np.nan, "KGE": np.nan, "Bias": np.nan}
 
     if not valid_simulation.any():
-        return simulated, metrics, "Warning: Embedded fixed-T RZSM has no valid data"
+        return simulated, metrics, "Warning: EF RZSM has no valid data"
     if np.count_nonzero(paired) < 2:
         return simulated, metrics, "Warning: Too few paired samples"
 
@@ -179,11 +181,10 @@ def process_station_file(task):
     input_file = os.path.join(task["input_directory"], filename)
     data_type = task["data_type"]
     surface_variable = f"{data_type}_SSM"
-    prediction_variable = task["ef_variables"][data_type]
     target_variable = task["target_variable"]
 
     with xr.open_dataset(input_file) as dataset:
-        required_variables = [surface_variable, prediction_variable, target_variable]
+        required_variables = [surface_variable, target_variable]
         missing_variables = [
             variable for variable in required_variables if variable not in dataset
         ]
@@ -195,28 +196,32 @@ def process_station_file(task):
         observed_rzsm = (
             np.asarray(dataset[target_variable].values).squeeze().reshape(-1)
         )
-        embedded_rzsm = (
-            np.asarray(dataset[prediction_variable].values).squeeze().reshape(-1)
-        )
         raw_time = np.asarray(dataset["time"].values).reshape(-1)
+
+    predicted_rzsm = filtered_rzsm(
+        surface_ssm,
+        raw_time,
+        task["filter_time_days"],
+        task["spin_up_days"],
+    ).reshape(-1)
 
     lengths = {
         len(raw_time),
         len(surface_ssm),
         len(observed_rzsm),
-        len(embedded_rzsm),
+        len(predicted_rzsm),
     }
     if len(lengths) != 1:
         raise ValueError(
             f"Time and soil-moisture lengths differ in {input_file}: "
             f"time={len(raw_time)}, SSM={len(surface_ssm)}, "
-            f"RZSM={len(observed_rzsm)}, EF={len(embedded_rzsm)}"
+            f"RZSM={len(observed_rzsm)}, EF={len(predicted_rzsm)}"
         )
     study_dates = pd.DatetimeIndex(pd.to_datetime(raw_time)).normalize()
 
     cleaned_prediction, metrics, flag = fixed_t_station_metrics(
         observed_rzsm,
-        embedded_rzsm,
+        predicted_rzsm,
     )
     output_dataset = xr.Dataset(
         data_vars={
@@ -227,9 +232,12 @@ def process_station_file(task):
         coords={"time": raw_time},
         attrs={
             "source_point_file": input_file,
-            "source_prediction_variable": prediction_variable,
+            "source_prediction_variable": surface_variable,
+            "prediction_source": "calculated from source SSM",
             "target_variable": target_variable,
             "filter_T_days": float(task["filter_time_days"]),
+            "filter_policy": str(task.get("filter_policy", "fixed_T15")),
+            "independent_test_targets_used_for_T_selection": np.int8(0),
             "adjustment_period": "one year",
             "adjustment_days_for_fixed_calendar": float(task["spin_up_days"]),
             "study_period_start": str(study_dates[0].date()),

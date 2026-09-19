@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 
+from EF.filter import exponential_filter
 from FNO.model import FNO
 from FNO.training import load_ensemble_bundle as load_fno_bundle
 from LSTM.model import LSTM
@@ -195,45 +196,6 @@ def _clean_ssm(values):
         values,
         np.nan,
     ).astype(np.float32)
-
-
-def exponential_filter(ssm, time_days, time_constant_days=15.0):
-    """Apply the recursive exponential filter on valid observation dates."""
-    ssm = np.asarray(ssm, dtype=np.float32)
-    time_days = np.asarray(time_days, dtype=np.float64)
-    if ssm.ndim != 2 or ssm.shape[1] != len(time_days):
-        raise ValueError("SSM must have shape (pixel, time) on the supplied dates.")
-    if float(time_constant_days) <= 0:
-        raise ValueError("The EF time constant must be positive.")
-
-    prediction = np.full_like(ssm, np.nan)
-    current = np.full(ssm.shape[0], np.nan, dtype=np.float32)
-    previous_gain = np.ones(ssm.shape[0], dtype=np.float32)
-    previous_time = np.zeros(ssm.shape[0], dtype=np.float64)
-    initialized = np.zeros(ssm.shape[0], dtype=bool)
-
-    for time_index, day in enumerate(time_days):
-        valid = np.isfinite(ssm[:, time_index])
-        new = valid & ~initialized
-        current[new] = ssm[new, time_index]
-        previous_gain[new] = 1.0
-        previous_time[new] = day
-        initialized[new] = True
-
-        update = valid & initialized & ~new
-        if np.any(update):
-            elapsed = day - previous_time[update]
-            if np.any(elapsed <= 0):
-                raise ValueError("Observation dates must be strictly increasing.")
-            decay = np.exp(-elapsed / float(time_constant_days)).astype(np.float32)
-            gain = previous_gain[update] / (previous_gain[update] + decay)
-            current[update] += gain * (
-                ssm[update, time_index] - current[update]
-            )
-            previous_gain[update] = gain
-            previous_time[update] = day
-        prediction[valid, time_index] = current[valid]
-    return prediction
 
 
 def _models_from_bundle(model_name, bundle, device):
@@ -579,7 +541,8 @@ def run_conus_prediction(
             ).astype(np.float64)
 
             for model_name in models:
-                path = output_directory / f"{model_name}_{product}_prediction.nc"
+                output_model_name = "Fixed_EF" if model_name == "EF" else model_name
+                path = output_directory / f"{output_model_name}_{product}_prediction.nc"
                 outputs[model_name] = _create_output(
                     path,
                     model_name,

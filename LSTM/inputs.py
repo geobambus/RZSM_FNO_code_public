@@ -40,7 +40,7 @@ def generate_input_csv(
     pixel_list_file = os.path.join(
         ismn_root,
         "Station_TCA_Screening",
-        f"Common_{area}_pixel_list.csv",
+        f"{area}_pixel_list.csv",
     )
     if not os.path.exists(pixel_list_file):
         if area == "Excluded":

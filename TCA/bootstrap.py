@@ -34,17 +34,23 @@ class Triplet:
     name: str
 
 
-FIXED_TRIPLETS = (
-    Triplet("ASCAT_EF", "SMAP_EF", "ERA5_Land", "EF_EF_ERA5-Land"),
-    Triplet("ASCAT_EF", "SMAP_EF", "NLDAS", "EF_EF_NLDAS"),
-    Triplet("ASCAT_FNO", "SMAP_EF", "ERA5_Land", "FNO_EF_ERA5-Land"),
-    Triplet("ASCAT_FNO", "SMAP_EF", "NLDAS", "FNO_EF_NLDAS"),
-    Triplet("ASCAT_LSTM", "SMAP_EF", "ERA5_Land", "LSTM_EF_ERA5-Land"),
-    Triplet("ASCAT_LSTM", "SMAP_EF", "NLDAS", "LSTM_EF_NLDAS"),
-    Triplet("ASCAT_EF", "SMAP_FNO", "ERA5_Land", "EF_FNO_ERA5-Land"),
-    Triplet("ASCAT_EF", "SMAP_FNO", "NLDAS", "EF_FNO_NLDAS"),
-    Triplet("ASCAT_EF", "SMAP_LSTM", "ERA5_Land", "EF_LSTM_ERA5-Land"),
-    Triplet("ASCAT_EF", "SMAP_LSTM", "NLDAS", "EF_LSTM_NLDAS"),
+LAND_REFERENCES = (
+    "ERA5-Land",
+    "NLDAS_NOAH",
+    "NLDAS_VIC",
+    "NLDAS_MOSAIC",
+)
+
+FIXED_TRIPLETS = tuple(
+    Triplet(ascat, smap, reference, f"{ascat.removeprefix('ASCAT_')}_{smap.removeprefix('SMAP_')}_{reference}")
+    for ascat, smap in (
+        ("ASCAT_EF", "SMAP_EF"),
+        ("ASCAT_FNO", "SMAP_EF"),
+        ("ASCAT_LSTM", "SMAP_EF"),
+        ("ASCAT_EF", "SMAP_FNO"),
+        ("ASCAT_EF", "SMAP_LSTM"),
+    )
+    for reference in LAND_REFERENCES
 )
 
 
@@ -351,9 +357,86 @@ def _initialize_worker(cube_paths, bootstrap_indices_path, nod_th, corr_th):
     _WORKER_CORRELATION_THRESHOLD = float(corr_th)
 
 
-def _calculate_task(task):
-    from HydroAI.TC_like import ETC_vec
+def _covariance_correlation_three(x, y, z):
+    """Return pairwise covariance and correlation grids along the last axis."""
+    valid = ~(np.isnan(x) | np.isnan(y) | np.isnan(z))
+    x_valid = np.where(valid, x, np.nan)
+    y_valid = np.where(valid, y, np.nan)
+    z_valid = np.where(valid, z, np.nan)
+    count = valid.sum(axis=-1)
 
+    def covariance(left, right):
+        left_centered = left - np.nanmean(left, axis=-1, keepdims=True)
+        right_centered = right - np.nanmean(right, axis=-1, keepdims=True)
+        return np.nansum(left_centered * right_centered, axis=-1) / (count - 1)
+
+    cov_xx = covariance(x_valid, x_valid)
+    cov_yy = covariance(y_valid, y_valid)
+    cov_zz = covariance(z_valid, z_valid)
+    cov_xy = covariance(x_valid, y_valid)
+    cov_xz = covariance(x_valid, z_valid)
+    cov_yz = covariance(y_valid, z_valid)
+    return {
+        "covXX": cov_xx,
+        "covYY": cov_yy,
+        "covZZ": cov_zz,
+        "covXY": cov_xy,
+        "covXZ": cov_xz,
+        "covYZ": cov_yz,
+        "corrXY": cov_xy / np.sqrt(cov_xx * cov_yy),
+        "corrXZ": cov_xz / np.sqrt(cov_xx * cov_zz),
+        "corrYZ": cov_yz / np.sqrt(cov_yy * cov_zz),
+    }
+
+
+def _extended_triple_collocation(x, y, z, nod_th=30, corr_th=0.0):
+    """Calculate vectorized extended triple-collocation diagnostics."""
+    statistics = _covariance_correlation_three(x, y, z)
+    cov_xx = statistics["covXX"]
+    cov_yy = statistics["covYY"]
+    cov_zz = statistics["covZZ"]
+    cov_xy = statistics["covXY"]
+    cov_xz = statistics["covXZ"]
+    cov_yz = statistics["covYZ"]
+
+    var_error = {
+        "x": cov_xx - cov_xy * cov_xz / cov_yz,
+        "y": cov_yy - cov_xy * cov_yz / cov_xz,
+        "z": cov_zz - cov_xz * cov_yz / cov_xy,
+    }
+    signal_variance = {
+        "x": cov_xy * cov_xz / cov_yz,
+        "y": cov_xy * cov_yz / cov_xz,
+        "z": cov_xz * cov_yz / cov_xy,
+    }
+    snr = {name: signal_variance[name] / var_error[name] for name in "xyz"}
+    snr_db = {name: 10.0 * np.log10(snr[name]) for name in "xyz"}
+    fractional_mse = {name: 1.0 / (1.0 + snr[name]) for name in "xyz"}
+    correlation = {name: 1.0 - fractional_mse[name] for name in "xyz"}
+
+    flags = {
+        "condition_corr": (
+            (statistics["corrXY"] < corr_th)
+            | (statistics["corrXZ"] < corr_th)
+            | (statistics["corrYZ"] < corr_th)
+        ),
+        "condition_n_valid": (
+            (~np.isnan(x) & ~np.isnan(y) & ~np.isnan(z)).sum(axis=-1) < nod_th
+        ),
+        "condition_fMSE": np.logical_or.reduce(
+            tuple(
+                (fractional_mse[name] < 0.0) | (fractional_mse[name] > 1.0)
+                for name in "xyz"
+            )
+        ),
+        "condition_negative_vars_err": np.logical_or.reduce(
+            tuple(var_error[name] < 0.0 for name in "xyz")
+        ),
+    }
+    return var_error, snr, snr_db, correlation, fractional_mse, flags
+
+
+def _calculate_task(task):
     bootstrap_start, bootstrap_stop, i0, i1, j0, j1 = task
     shape = (i1 - i0, j1 - j0, bootstrap_stop - bootstrap_start)
     outputs = [np.full(shape, np.nan, dtype=np.float32) for _ in range(10)]
@@ -364,7 +447,7 @@ def _calculate_task(task):
         indices = _WORKER_INDICES[bootstrap_index]
         sampled = tuple(np.take(chunk, indices, axis=-1) for chunk in chunks)
         with np.errstate(divide="ignore", invalid="ignore"):
-            var_error, snr, _, _, _, flags = ETC_vec(
+            var_error, snr, _, _, _, flags = _extended_triple_collocation(
                 *sampled,
                 nod_th=_WORKER_NOD_THRESHOLD,
                 corr_th=_WORKER_CORRELATION_THRESHOLD,
@@ -526,7 +609,7 @@ def _write_result(
             dataset.model2 = triplet.smap.removeprefix("SMAP_")
             dataset.model3 = (
                 "ERA5-Land"
-                if triplet.reference == "ERA5_Land"
+                if triplet.reference == "ERA5-Land"
                 else triplet.reference
             )
             dataset.rolling_anomaly_window_days = int(rolling_window)

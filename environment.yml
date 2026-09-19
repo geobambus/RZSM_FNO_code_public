@@ -1,0 +1,15 @@
+name: rzsm-fno
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - jupyterlab
+  - matplotlib
+  - netcdf4
+  - numpy<2
+  - optuna
+  - pandas
+  - pytorch
+  - scipy
+  - tqdm
+  - xarray
