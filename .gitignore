@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+._*
+.DS_Store
+*.egg-info/
+build/
+dist/
+.matplotlib_cache/
+# Default data root when RZSM_DATA_ROOT is not set
+data/
+.venv/
+/Results/
+/Figures/

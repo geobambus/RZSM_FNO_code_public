@@ -1,0 +1,8 @@
+numpy==2.3.4
+pandas==2.3.0
+netCDF4==1.7.2
+xarray==2025.6.1
+torch==2.7.1
+tqdm==4.67.1
+matplotlib==3.10.3
+optuna==4.8.0
